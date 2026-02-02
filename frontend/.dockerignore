@@ -1,0 +1,16 @@
+.dart_tool
+.git
+.gitignore
+.idea
+.vscode
+build/ios
+build/macos
+build/windows
+build/linux
+build/app
+build/flutter_assets
+build/cache.dill
+build/kernel_snapshot.d
+build/outputs
+build/intermediates
+build/generated

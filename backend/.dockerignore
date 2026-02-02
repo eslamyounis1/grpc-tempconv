@@ -1,0 +1,10 @@
+**/*.test
+**/*.out
+**/*.log
+.git
+.gitignore
+.idea
+.vscode
+bin
+tmp
+vendor

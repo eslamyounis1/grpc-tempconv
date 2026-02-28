@@ -1,8 +1,10 @@
-import 'dart:convert';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'package:grpc/grpc.dart' as grpc;
+import 'package:grpc/grpc_or_grpcweb.dart';
+
+import 'generated/tempconv.pb.dart' as rpc;
+import 'generated/tempconv.pbgrpc.dart' as rpc_grpc;
 
 void main() {
   runApp(const TempConvApp());
@@ -30,22 +32,10 @@ class TempConvApp extends StatelessWidget {
             fontWeight: FontWeight.w700,
             letterSpacing: -0.5,
           ),
-          titleLarge: TextStyle(
-            fontSize: 22,
-            fontWeight: FontWeight.w600,
-          ),
-          titleMedium: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w600,
-          ),
-          bodyLarge: TextStyle(
-            fontSize: 16,
-            height: 1.4,
-          ),
-          bodyMedium: TextStyle(
-            fontSize: 14,
-            height: 1.4,
-          ),
+          titleLarge: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+          titleMedium: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+          bodyLarge: TextStyle(fontSize: 16, height: 1.4),
+          bodyMedium: TextStyle(fontSize: 14, height: 1.4),
         ),
       ),
       home: const ConverterPage(),
@@ -64,6 +54,9 @@ class _ConverterPageState extends State<ConverterPage> {
   final TextEditingController _valueController = TextEditingController();
   late final TextEditingController _urlController;
 
+  static const String _envBackendOverride =
+      String.fromEnvironment('BACKEND_URL', defaultValue: '');
+  static const String _prodBackendUrl = 'http://34.31.122.97';
   String _fromUnit = 'C';
   String _toUnit = 'F';
   String? _result;
@@ -109,32 +102,29 @@ class _ConverterPageState extends State<ConverterPage> {
       setState(() => _error = 'Enter the backend URL.');
       return;
     }
+    final endpoint = _parseEndpoint(baseUrl);
+    if (endpoint == null) {
+      setState(() => _error = 'Enter a valid backend URL.');
+      return;
+    }
 
     setState(() => _loading = true);
+    final channel = _createChannel(endpoint);
+    final client = rpc_grpc.TempConverterClient(channel);
     try {
-      final uri = Uri.parse('$baseUrl/convert');
-      final response = await http.post(
-        uri,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'value': value,
-          'from': _fromUnit,
-          'to': _toUnit,
-        }),
+      final response = await client.convert(
+        rpc.ConvertRequest(value: value, from: _fromUnit, to: _toUnit),
       );
-
-      final Map<String, dynamic> payload =
-          jsonDecode(response.body) as Map<String, dynamic>;
-
-      if (response.statusCode != 200) {
-        setState(() => _error = payload['error']?.toString() ?? 'Server error');
-      } else {
-        final resultValue = payload['result'];
-        setState(() => _result = _formatResult(resultValue));
-      }
+      setState(() => _result = _formatResult(response.result));
+    } on grpc.GrpcError catch (err) {
+      final reason = err.message?.isNotEmpty == true
+          ? err.message!
+          : 'gRPC error: ${_grpcCode(err)}';
+      setState(() => _error = reason);
     } catch (err) {
       setState(() => _error = 'Request failed: $err');
     } finally {
+      await channel.shutdown();
       setState(() => _loading = false);
     }
   }
@@ -156,15 +146,86 @@ class _ConverterPageState extends State<ConverterPage> {
 
   String _formatResult(dynamic value) {
     if (value == null) return '';
-    final numValue = value is num ? value.toDouble() : double.tryParse('$value');
+    final numValue = value is num
+        ? value.toDouble()
+        : double.tryParse('$value');
     if (numValue == null) return '$value';
     final digits = int.tryParse(_rounding) ?? 2;
     return numValue.toStringAsFixed(digits);
   }
 
+  GrpcOrGrpcWebClientChannel _createChannel(Uri endpoint) {
+    final secure = endpoint.scheme == 'https';
+    final port = endpoint.hasPort
+        ? endpoint.port
+        : secure
+            ? 443
+            : 80;
+    return GrpcOrGrpcWebClientChannel.toSingleEndpoint(
+      host: endpoint.host,
+      port: port,
+      transportSecure: secure,
+    );
+  }
+
+  Uri? _parseEndpoint(String baseUrl) {
+    if (baseUrl.isEmpty) return null;
+    Uri? uri;
+    try {
+      uri = Uri.parse(baseUrl);
+    } catch (_) {
+      return null;
+    }
+    if (!uri.hasScheme) {
+      uri = Uri.parse('http://${uri.toString()}');
+    }
+    if (uri.host.isEmpty) {
+      return null;
+    }
+    return uri;
+  }
+
+  static const Map<int, String> _grpcCodeNames = {
+    grpc.StatusCode.ok: 'ok',
+    grpc.StatusCode.cancelled: 'cancelled',
+    grpc.StatusCode.unknown: 'unknown',
+    grpc.StatusCode.invalidArgument: 'invalid argument',
+    grpc.StatusCode.deadlineExceeded: 'deadline exceeded',
+    grpc.StatusCode.notFound: 'not found',
+    grpc.StatusCode.alreadyExists: 'already exists',
+    grpc.StatusCode.permissionDenied: 'permission denied',
+    grpc.StatusCode.resourceExhausted: 'resource exhausted',
+    grpc.StatusCode.failedPrecondition: 'failed precondition',
+    grpc.StatusCode.aborted: 'aborted',
+    grpc.StatusCode.outOfRange: 'out of range',
+    grpc.StatusCode.unimplemented: 'unimplemented',
+    grpc.StatusCode.internal: 'internal',
+    grpc.StatusCode.unavailable: 'unavailable',
+    grpc.StatusCode.dataLoss: 'data loss',
+    grpc.StatusCode.unauthenticated: 'unauthenticated',
+  };
+
+  String _grpcCode(grpc.GrpcError error) {
+    return _grpcCodeNames[error.code] ?? 'code ${error.code}';
+  }
+
   String _defaultBaseUrl() {
     if (kIsWeb) {
+      final queryBackend = Uri.base.queryParameters['backend'];
+      if (queryBackend != null && queryBackend.isNotEmpty) {
+        return queryBackend;
+      }
+      if (_envBackendOverride.isNotEmpty) {
+        return _envBackendOverride;
+      }
+      if (kReleaseMode ||
+          (Uri.base.host.isNotEmpty && Uri.base.host != 'localhost')) {
+        return _prodBackendUrl;
+      }
       return 'http://localhost:8080';
+    }
+    if (_envBackendOverride.isNotEmpty) {
+      return _envBackendOverride;
     }
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
@@ -196,7 +257,7 @@ class _ConverterPageState extends State<ConverterPage> {
               height: 180,
               width: 180,
               decoration: BoxDecoration(
-                color: colorScheme.primary.withOpacity(0.12),
+                color: colorScheme.primary.withValues(alpha: 0.12),
                 shape: BoxShape.circle,
               ),
             ),
@@ -208,7 +269,7 @@ class _ConverterPageState extends State<ConverterPage> {
               height: 200,
               width: 200,
               decoration: BoxDecoration(
-                color: colorScheme.secondary.withOpacity(0.12),
+                color: colorScheme.secondary.withValues(alpha: 0.12),
                 shape: BoxShape.circle,
               ),
             ),
@@ -274,15 +335,17 @@ class _ConverterPageState extends State<ConverterPage> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
             decoration: BoxDecoration(
-              color: Theme.of(context).colorScheme.primary.withOpacity(0.12),
+              color: Theme.of(
+                context,
+              ).colorScheme.primary.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(20),
             ),
             child: Text(
               'Go + Flutter',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: Theme.of(context).colorScheme.primary,
-                  ),
+                fontWeight: FontWeight.w600,
+                color: Theme.of(context).colorScheme.primary,
+              ),
             ),
           ),
           const SizedBox(height: 16),
@@ -300,7 +363,6 @@ class _ConverterPageState extends State<ConverterPage> {
             spacing: 12,
             runSpacing: 12,
             children: [
-              _featureChip(context, 'Fast API'),
               _featureChip(context, 'Mobile + Web'),
               _featureChip(context, 'Live Convert'),
             ],
@@ -314,15 +376,15 @@ class _ConverterPageState extends State<ConverterPage> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.85),
+        color: Colors.white.withValues(alpha: 0.85),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: Colors.white70),
       ),
       child: Text(
         label,
-        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              fontWeight: FontWeight.w600,
-            ),
+        style: Theme.of(
+          context,
+        ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
       ),
     );
   }
@@ -342,8 +404,9 @@ class _ConverterPageState extends State<ConverterPage> {
             const SizedBox(height: 16),
             TextField(
               controller: _valueController,
-              keyboardType:
-                  const TextInputType.numberWithOptions(decimal: true),
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+              ),
               decoration: const InputDecoration(
                 labelText: 'Temperature value',
                 hintText: 'e.g., 36.6',
@@ -354,21 +417,25 @@ class _ConverterPageState extends State<ConverterPage> {
             const SizedBox(height: 16),
             Row(
               children: [
-                Expanded(child: _unitDropdown(_fromUnit, (value) {
-                  if (value == null) return;
-                  setState(() => _fromUnit = value);
-                  _maybeAutoConvert();
-                })),
+                Expanded(
+                  child: _unitDropdown(_fromUnit, (value) {
+                    if (value == null) return;
+                    setState(() => _fromUnit = value);
+                    _maybeAutoConvert();
+                  }),
+                ),
                 IconButton(
                   onPressed: _swapUnits,
                   icon: const Icon(Icons.swap_horiz),
                   tooltip: 'Swap',
                 ),
-                Expanded(child: _unitDropdown(_toUnit, (value) {
-                  if (value == null) return;
-                  setState(() => _toUnit = value);
-                  _maybeAutoConvert();
-                })),
+                Expanded(
+                  child: _unitDropdown(_toUnit, (value) {
+                    if (value == null) return;
+                    setState(() => _toUnit = value);
+                    _maybeAutoConvert();
+                  }),
+                ),
               ],
             ),
             const SizedBox(height: 16),
@@ -394,10 +461,12 @@ class _ConverterPageState extends State<ConverterPage> {
                       border: OutlineInputBorder(),
                     ),
                     items: _roundingOptions
-                        .map((value) => DropdownMenuItem(
-                              value: value,
-                              child: Text(value),
-                            ))
+                        .map(
+                          (value) => DropdownMenuItem(
+                            value: value,
+                            child: Text(value),
+                          ),
+                        )
                         .toList(),
                     onChanged: (value) {
                       if (value == null) return;
@@ -413,7 +482,8 @@ class _ConverterPageState extends State<ConverterPage> {
               controller: _urlController,
               decoration: const InputDecoration(
                 labelText: 'Backend URL',
-                helperText: 'Android emulator: http://10.0.2.2:8080',
+                helperText:
+                    'gRPC endpoint, Android emulator: http://10.0.2.2:8080',
                 border: OutlineInputBorder(),
               ),
               onChanged: (_) => _maybeAutoConvert(),
@@ -438,9 +508,11 @@ class _ConverterPageState extends State<ConverterPage> {
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: colorScheme.primary.withOpacity(0.08),
+                  color: colorScheme.primary.withValues(alpha: 0.08),
                   borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: colorScheme.primary.withOpacity(0.2)),
+                  border: Border.all(
+                    color: colorScheme.primary.withValues(alpha: 0.2),
+                  ),
                 ),
                 child: Row(
                   children: [
@@ -460,9 +532,7 @@ class _ConverterPageState extends State<ConverterPage> {
                 padding: const EdgeInsets.only(top: 8),
                 child: Text(
                   _error!,
-                  style: TextStyle(
-                    color: colorScheme.error,
-                  ),
+                  style: TextStyle(color: colorScheme.error),
                 ),
               ),
           ],

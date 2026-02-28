@@ -1,11 +1,10 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"context"
 	"testing"
+
+	pb "tempconv-backend/pb"
 )
 
 func TestConvertTemp(t *testing.T) {
@@ -37,20 +36,17 @@ func TestConvertTemp(t *testing.T) {
 	}
 }
 
-func TestConvertHandler(t *testing.T) {
-	body, _ := json.Marshal(convertRequest{
+func TestConverterServerConvert(t *testing.T) {
+	srv := &converterServer{}
+	resp, err := srv.Convert(context.Background(), &pb.ConvertRequest{
 		Value: 100,
 		From:  "C",
 		To:    "F",
 	})
-
-	req := httptest.NewRequest(http.MethodPost, "/convert", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-
-	convertHandler(w, req)
-
-	resp := w.Result()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	if err != nil {
+		t.Fatalf("Convert returned error: %v", err)
+	}
+	if resp.GetResult() != 212 {
+		t.Fatalf("got %v, want 212", resp.GetResult())
 	}
 }

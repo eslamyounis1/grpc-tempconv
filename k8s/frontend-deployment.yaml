@@ -14,7 +14,8 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: us-central1-docker.pkg.dev/tempconv-485913/tempconv/tempconv-frontend:1.0.0
+          image: us-central1-docker.pkg.dev/temp-converter-488818/tempconv/tempconv-frontend:2.0.0
+          imagePullPolicy: Always
           ports:
             - containerPort: 80
           readinessProbe:

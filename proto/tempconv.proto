@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package tempconv.v1;
+
+option go_package = "tempconv-backend/pb";
+
+message ConvertRequest {
+  double value = 1;
+  string from = 2;
+  string to = 3;
+}
+
+message ConvertResponse {
+  double result = 1;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  string status = 1;
+}
+
+service TempConverter {
+  rpc Convert(ConvertRequest) returns (ConvertResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}

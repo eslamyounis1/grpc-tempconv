@@ -14,12 +14,15 @@ spec:
     spec:
       containers:
         - name: backend
-          image: us-central1-docker.pkg.dev/tempconv-485913/tempconv/tempconv-backend:1.0.0
+          image: us-central1-docker.pkg.dev/temp-converter-488818/tempconv/tempconv-backend:2.0.0
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           env:
             - name: PORT
               value: "8080"
+            - name: CORS_ORIGINS
+              value: "*"
           readinessProbe:
             httpGet:
               path: /health
